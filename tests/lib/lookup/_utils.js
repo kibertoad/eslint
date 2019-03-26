@@ -95,23 +95,6 @@ const proxyquire = new class extends Proxyquire {
 const context = vm.createContext();
 
 /**
- * Compile a JavaScript file.
- * @param {string} filePath The path to a JavaScript file to compile.
- * @param {string} content The source code to compile.
- * @returns {any} The exported value.
- */
-function compile(filePath, content) {
-    const code = `(function(exports, require, module, __filename, __dirname) { ${content} })`;
-    const f = vm.runInContext(code, context);
-    const exports = {};
-    const module = { exports };
-
-    f.call(exports, exports, null, module, filePath, path.dirname(filePath));
-
-    return module.exports;
-}
-
-/**
  * Check if a given path is an existing file.
  * @param {typeof import("fs")} fs The file system.
  * @param {string} filePath Tha path to a file to check.
@@ -185,12 +168,47 @@ function fsResolve(fs, request, relativeTo) {
 }
 
 /**
+ * Compile a JavaScript file.
+ * @param {typeof import("fs")} fs The file system.
+ * @param {Object} stubs The stubs.
+ * @param {string} filePath The path to a JavaScript file to compile.
+ * @param {string} content The source code to compile.
+ * @returns {any} The exported value.
+ */
+function compile(fs, stubs, filePath, content) {
+    const code = `(function(exports, require, module, __filename, __dirname) { ${content} })`;
+    const f = vm.runInContext(code, context);
+    const exports = {};
+    const module = { exports };
+
+    f.call(
+        exports,
+        exports,
+        request => {
+            const modulePath = fsResolve(fs, request, filePath);
+            const stub = stubs[modulePath];
+
+            if (stub[ERRORED]) {
+                throw stub[ERRORED];
+            }
+            return stub;
+        },
+        module,
+        filePath,
+        path.dirname(filePath)
+    );
+
+    return module.exports;
+}
+
+/**
  * Import a given file path in the given file system.
  * @param {typeof import("fs")} fs The file system.
+ * @param {Object} stubs The stubs.
  * @param {string} absolutePath Tha file path to import.
  * @returns {void}
  */
-function fsImportFresh(fs, absolutePath) {
+function fsImportFresh(fs, stubs, absolutePath) {
     if (absolutePath === ESLintAllPath) {
         return require(ESLintAllPath);
     }
@@ -200,6 +218,8 @@ function fsImportFresh(fs, absolutePath) {
 
     if (fs.existsSync(absolutePath)) {
         return compile(
+            fs,
+            stubs,
             absolutePath,
             fs.readFileSync(absolutePath, "utf8")
         );
@@ -226,7 +246,11 @@ function supportMkdirRecursiveOption(fs, cwd) {
                 const absolutePath = path.resolve(cwd(), filePath);
                 const parentPath = path.dirname(absolutePath);
 
-                if (parentPath && parentPath !== absolutePath && !fs.existsSync(parentPath)) {
+                if (
+                    parentPath &&
+                    parentPath !== absolutePath &&
+                    !fs.existsSync(parentPath)
+                ) {
                     fs.mkdirSync(parentPath, options);
                 }
             }
@@ -265,11 +289,11 @@ function defineConfigArrayFactoryWithInmemoryFileSystem({
      * Stubs for proxyquire.
      * This contains the JavaScript files in `options.files`.
      */
-    const stubs = {
-        fs,
-        "import-fresh": fsImportFresh.bind(null, fs),
-        "./module-resolver": { resolve: fsResolve.bind(null, fs) }
-    };
+    const stubs = {};
+
+    stubs.fs = fs;
+    stubs["import-fresh"] = fsImportFresh.bind(null, fs, stubs);
+    stubs["./module-resolver"] = { resolve: fsResolve.bind(null, fs) };
 
     /*
      * Write all files to the in-memory file system and compile all JavaScript
@@ -300,11 +324,27 @@ function defineConfigArrayFactoryWithInmemoryFileSystem({
              * For parsers and plugins that `require()` will import.
              */
             if (path.extname(filePath) === ".js") {
-                try {
-                    stubs[filePath] = compile(filePath, content);
-                } catch (error) {
-                    stubs[filePath] = { [ERRORED]: error };
-                }
+                Object.defineProperty(stubs, filePath, {
+                    configurable: true,
+                    enumerable: true,
+                    get() {
+                        let stub;
+
+                        try {
+                            stub = compile(fs, stubs, filePath, content);
+                        } catch (error) {
+                            stub = { [ERRORED]: error };
+                        }
+                        Object.defineProperty(stubs, filePath, {
+                            configurable: true,
+                            enumerable: true,
+                            writable: true,
+                            value: stub
+                        });
+
+                        return stub;
+                    }
+                });
             }
         }
     }(cwd(), files));
@@ -337,7 +377,7 @@ function defineFileEnumeratorWithInmemoryFileSystem({
     files = {}
 } = {}) {
     const { fs, ConfigArrayFactory } =
-        defineConfigArrayFactoryWithInmemoryFileSystem({ cwd, files });
+           defineConfigArrayFactoryWithInmemoryFileSystem({ cwd, files });
     const { IgnoredPaths } = proxyquire(IgnoredPathsPath, { fs });
     const loadRules = proxyquire(LoadRulesPath, { fs });
     const { FileEnumerator } = proxyquire(FileEnumeratorPath, {
