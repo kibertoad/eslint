@@ -7,7 +7,13 @@
 
 const baseConfigProperties = {
     env: { type: "object" },
+    extends: { $ref: "#/definitions/stringOrStrings" },
     globals: { type: "object" },
+    overrides: {
+        type: "array",
+        items: { $ref: "#/definitions/overrideConfig" },
+        additionalItems: false
+    },
     parser: { type: ["string", "null"] },
     parserOptions: { type: "object" },
     plugins: { type: "array" },
@@ -17,11 +23,18 @@ const baseConfigProperties = {
     ecmaFeatures: { type: "object" } // deprecated; logs a warning when used
 };
 
-const overrideProperties = Object.assign(
-    {},
-    baseConfigProperties,
-    {
-        files: {
+const configSchema = {
+    definitions: {
+        stringOrStrings: {
+            oneOf: [
+                { type: "string" },
+                {
+                    type: "array",
+                    items: { type: "string" }
+                }
+            ]
+        },
+        stringOrStringsRequired: {
             oneOf: [
                 { type: "string" },
                 {
@@ -31,40 +44,35 @@ const overrideProperties = Object.assign(
                 }
             ]
         },
-        excludedFiles: {
-            oneOf: [
-                { type: "string" },
+
+        // Config at top-level.
+        objectConfig: {
+            type: "object",
+            properties: Object.assign(
                 {
-                    type: "array",
-                    items: { type: "string" }
-                }
-            ]
-        }
-    }
-);
+                    root: { type: "boolean" }
+                },
+                baseConfigProperties
+            ),
+            additionalProperties: false
+        },
 
-const topLevelConfigProperties = Object.assign(
-    {},
-    baseConfigProperties,
-    {
-        extends: { type: ["string", "array"] },
-        root: { type: "boolean" },
-        overrides: {
-            type: "array",
-            items: {
-                type: "object",
-                properties: overrideProperties,
-                required: ["files"],
-                additionalProperties: false
-            }
+        // Config in `overrides`.
+        overrideConfig: {
+            type: "object",
+            properties: Object.assign(
+                {
+                    excludedFiles: { $ref: "#/definitions/stringOrStrings" },
+                    files: { $ref: "#/definitions/stringOrStringsRequired" }
+                },
+                baseConfigProperties
+            ),
+            required: ["files"],
+            additionalProperties: false
         }
-    }
-);
+    },
 
-const configSchema = {
-    type: "object",
-    properties: topLevelConfigProperties,
-    additionalProperties: false
+    $ref: "#/definitions/objectConfig"
 };
 
 module.exports = configSchema;
